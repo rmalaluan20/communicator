@@ -8,13 +8,15 @@ export async function POST() {
   if (error) return error
   const settings = await loadAiSettings()
   const ai = resolveAi(settings)
-  if (!ai.apiKey) {
-    return Response.json({ ok: false, status: 'Connection Failed', error: 'No API key is configured.' })
+  if (!ai.apiKey || (ai.provider === 'cloudflare' && !ai.accountId)) {
+    return Response.json({ ok: false, status: 'Connection Failed', error: 'The AI service is not configured.' })
   }
   try {
     const text = await completeText({
       apiKey: ai.apiKey,
       model: ai.model,
+      provider: ai.provider,
+      accountId: ai.accountId,
       system: 'Reply with exactly the word ok.',
       user: 'ping',
     })

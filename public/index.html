@@ -1969,7 +1969,7 @@ async function loadAiSettings(){
 async function saveAiSettings(){
   const body = {
     provider: ($('#aiProvider')&&$('#aiProvider').value)||'openai',
-    model: ($('#aiModel')&&$('#aiModel').value)||'gpt-4o-mini',
+    model: ($('#aiModel')&&$('#aiModel').value)||( ($('#aiProvider')&&$('#aiProvider').value)==='cloudflare' ? '@cf/openai/gpt-oss-120b' : 'gpt-4o-mini'),
     enabled: !!($('#aiOn')&&$('#aiOn').checked),
     applyChecklist: !!($('#aiApply')&&$('#aiApply').checked),
   };
@@ -2960,27 +2960,34 @@ function pickImage(cb){
   inp.click();
 }
 function setAi(){
-  const s=window.__fosAi||{provider:'openai', model:'gpt-4o-mini', enabled:false, hasKey:false, source:null, applyChecklist:false};
+  const s=window.__fosAi||{provider:'cloudflare', model:'@cf/openai/gpt-oss-120b', enabled:false, hasKey:false, hasAccount:false, source:null, applyChecklist:false};
+  const cf=s.provider==='cloudflare';
+  const model=s.model && !(cf && s.model==='gpt-4o-mini') ? s.model : (cf?'@cf/openai/gpt-oss-120b':'gpt-4o-mini');
+  const keyNote=s.hasKey?'<span class="opt">saved'+(s.source==='environment'?' in the server environment':'')+'</span>':'<span class="opt">not set</span>';
+  const accountNote=cf?(s.hasAccount?'<span class="opt">account id is on the server</span>':'<span class="opt">account id is missing on the server</span>'):'';
   return `<div class="card">
     <div class="pad" style="border-bottom:1px solid var(--line)">
       <h2>AI Integration</h2>
-      <p class="muted" style="font-size:12.5px;margin-top:4px;max-width:70ch">Used by AI Audit and Ask Agent. The key stays on the server. After it is saved, this page only shows whether a key is present.</p>
+      <p class="muted" style="font-size:12.5px;margin-top:4px;max-width:70ch">Used by AI Audit and Ask Agent. The token stays on the server. After it is saved, this page only shows whether a token is present.</p>
     </div>
     <div class="pad" style="display:flex;flex-direction:column;gap:12px">
       <div class="fields" style="grid-template-columns:1fr 1fr;gap:10px">
         <div class="f"><label for="aiProvider">AI provider</label>
-          <select id="aiProvider"><option value="openai" ${s.provider==='openai'?'selected':''}>OpenAI</option></select></div>
+          <select id="aiProvider">
+            <option value="cloudflare" ${cf?'selected':''}>Cloudflare Workers AI</option>
+            <option value="openai" ${s.provider==='openai'?'selected':''}>OpenAI</option>
+          </select></div>
         <div class="f"><label for="aiModel">Model</label>
-          <input id="aiModel" value="${esc(s.model||'gpt-4o-mini')}" placeholder="gpt-4o-mini"></div>
+          <input id="aiModel" value="${esc(model)}" placeholder="${cf?'@cf/openai/gpt-oss-120b':'gpt-4o-mini'}"></div>
       </div>
-      <div class="f"><label for="aiKey">API key ${s.hasKey?'<span class="opt">saved'+(s.source==='environment'?' in the server environment':'')+'</span>':'<span class="opt">not set</span>'}</label>
-        <input id="aiKey" type="password" autocomplete="new-password" placeholder="${s.hasKey?'Leave blank to keep the saved key':'Paste a key — it is not shown again'}"></div>
+      <div class="f"><label for="aiKey">${cf?'Cloudflare API token':'API key'} ${keyNote} ${accountNote}</label>
+        <input id="aiKey" type="password" autocomplete="new-password" placeholder="${s.hasKey?'Leave blank to keep the saved token':'Paste a token — it is not shown again'}"></div>
       <label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" id="aiOn" ${s.enabled?'checked':''}> Enabled</label>
       <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px"><input type="checkbox" id="aiApply" ${s.applyChecklist?'checked':''}> <span>Let a verified audit mark checklist items the portal can actually see. Off by default. The audit never treats a manual tick as proof, and it does not clear existing ticks.</span></label>
       <div class="btn-row">
         <button class="btn pri" id="aiSave">Save</button>
         <button class="btn" id="aiTest">Test connection</button>
-        <span id="aiStat" class="dim" style="font-size:12.5px;align-self:center">${s.hasKey&&s.enabled?'Ready to test':'Not connected'}</span>
+        <span id="aiStat" class="dim" style="font-size:12.5px;align-self:center">${s.hasKey&&s.enabled&&s.hasAccount!==false?'Ready to test':'Not connected'}</span>
       </div>
     </div>
   </div>`;

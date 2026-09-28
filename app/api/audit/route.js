@@ -57,6 +57,8 @@ export async function POST(request) {
     const raw = await completeText({
       apiKey: ai.apiKey,
       model: ai.model,
+      provider: ai.provider,
+      accountId: ai.accountId,
       json: true,
       system: [
         'You write the narrative for a FenceOS onboarding audit.',

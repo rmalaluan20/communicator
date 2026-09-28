@@ -1,6 +1,6 @@
 import { requireRole } from '@/lib/auth'
 import { pool } from '@/lib/db'
-import { loadAiSettings, publicAi, resolveAi } from '@/lib/ai'
+import { loadAiSettings, publicAi, resolveAi, normalizeAiInput } from '@/lib/ai'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,8 +16,7 @@ export async function PUT(request) {
   if (error) return error
   let body
   try { body = await request.json() } catch { return Response.json({ error: 'Invalid request body' }, { status: 400 }) }
-  const provider = String(body.provider || 'openai').slice(0, 40)
-  const model = String(body.model || 'gpt-4o-mini').slice(0, 80)
+  const { provider, model } = normalizeAiInput(body)
   const enabled = !!body.enabled
   const applyChecklist = !!body.applyChecklist
   const keyIn = typeof body.apiKey === 'string' ? body.apiKey.trim() : null

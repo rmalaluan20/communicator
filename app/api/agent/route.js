@@ -65,6 +65,8 @@ export async function POST(request) {
     const answer = await completeText({
       apiKey: ai.apiKey,
       model: ai.model,
+      provider: ai.provider,
+      accountId: ai.accountId,
       system: [
         'You are the FenceOS onboarding assistant.',
         'Answer only from the JSON context about the one subaccount provided.',
