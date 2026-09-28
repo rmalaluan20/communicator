@@ -2067,6 +2067,13 @@ function parseLoc(v){
   return '';
 }
 const hasLink = a=>!!(a && a.locId);
+function credChip(a){
+  const bag=window.__fosKeys;
+  if(!a || !bag || !Object.prototype.hasOwnProperty.call(bag, a.id)) return '';
+  return bag[a.id]
+    ? '<span class="chip c-ok" style="font-size:10.5px"><i class="dot"></i>API token saved</span>'
+    : '<span class="chip c-idle" style="font-size:10.5px"><i class="dot"></i>No API token</span>';
+}
 const acctUrl = (a,path)=> hasLink(a) ? commUrl(a.locId,path) : '';
 
 const VERDICT = {
@@ -2405,6 +2412,7 @@ function vAccount(){
         <div><h1 style="font-size:21px">${esc(a.name)}</h1>
           <div class="split" style="margin-top:5px;flex-wrap:wrap">
             ${hasLink(a)?`<span class="mono dim" style="font-size:12px">${a.locId}</span>`:'<span class="chip c-warn" style="font-size:10.5px"><i class="dot"></i>No Communicator link</span>'}
+            ${credChip(a)}
             <span class="mono dim" style="font-size:12px">${accountPath(a)}</span>
             <button class="btn sm ghost" id="editLink" style="padding:1px 6px;font-size:11px">${hasLink(a)?'Edit link':'Add link'}</button>
             <button class="btn sm ghost" id="editLogo" style="padding:1px 6px;font-size:11px">${a.logo?'Change logo':'Add logo'}</button>
@@ -2555,6 +2563,15 @@ function vAccount(){
 }
 function bindAccount(){
   const a=ACCOUNTS.find(x=>x.id===S.acct)||ACCOUNTS[0];
+  if(isOwner() && a && (!window.__fosKeys || !Object.prototype.hasOwnProperty.call(window.__fosKeys, a.id)) && window.__fosKeysLoading!==a.id){
+    window.__fosKeysLoading=a.id;
+    fetch('/api/credentials?accountId='+encodeURIComponent(a.id), {cache:'no-store'}).then(r=>r.ok?r.json():null).then(j=>{
+      window.__fosKeys=window.__fosKeys||{};
+      if(j) window.__fosKeys[a.id]=!!j.hasKey;
+      window.__fosKeysLoading=null;
+      if(j && S.view==='account' && S.acct===a.id) render();
+    }).catch(()=>{ window.__fosKeysLoading=null; });
+  }
   $$('[data-k]').forEach(b=>b.onclick=()=>toggleMark(a.id,b.dataset.k));
   $$('[data-gall]').forEach(b=>b.onclick=()=>toggleGroup(a.id,GROUPS.find(g=>g.id===b.dataset.gall)));
   $$('[data-gopen]').forEach(b=>b.onclick=()=>{
@@ -2701,14 +2718,20 @@ function openAcctLogo(a){
 function openLinkEditor(a){
   if(!isOwner()){ toast('View only — only the owner can edit subaccount details','bad'); return; }
   const prev=id=>id?[commUrl(id),commUrl(id,'/settings/company'),commUrl(id,'/settings/phone_number')].join('\n'):'\u2014';
-  modal(`<div class="modal" role="dialog" aria-modal="true" style="width:min(520px,100%)">
+  const known=window.__fosKeys && Object.prototype.hasOwnProperty.call(window.__fosKeys, a.id);
+  const hasKey=!!(known && window.__fosKeys[a.id]);
+  modal(`<div class="modal" role="dialog" aria-modal="true" style="width:min(560px,100%)">
     <div class="modal-head"><div class="mi" style="background:var(--accent-soft);color:var(--accent)">${ic('ext',17)}</div>
-      <div style="flex:1"><h2>Communicator link</h2>
+      <div style="flex:1"><h2>Communicator access</h2>
       <p class="muted" style="font-size:13px;margin-top:3px">${esc(a.name)}</p></div></div>
     <div class="modal-body">
-      <div class="f"><label for="lnkIn">Paste the subaccount URL, or just its location ID</label>
+      <div class="f"><label for="lnkIn">Location link</label>
         <input id="lnkIn" class="mono" value="${a.locId||''}" placeholder="${commBase()}/v2/location/AbC123xyz/dashboard">
-        <div class="hint">Open the subaccount in fenceOS Communicator and copy the address bar &mdash; the location ID is pulled out for you.</div></div>
+        <div class="hint">Open the subaccount in fenceOS Communicator and copy the address bar. The location ID is pulled out for you.</div></div>
+      <div class="f" style="margin-top:14px"><label for="lnkKey">API token for this subaccount ${hasKey?'<span class="opt">saved</span>':'<span class="opt">not set</span>'}</label>
+        <input id="lnkKey" type="password" autocomplete="new-password" placeholder="${hasKey?'Leave blank to keep the saved token':'Paste the Private Integration token'}">
+        <div class="hint">In that subaccount, open Settings → Private Integrations and create a read-only token for locations, calendars, users, phone numbers, custom values, custom fields, and funnels. It is stored on the server and is not shown again.</div></div>
+      ${hasKey?'<label style="display:flex;gap:8px;align-items:center;font-size:13px;margin-top:10px"><input type="checkbox" id="lnkClearKey"> Remove the saved API token</label>':''}
       <div id="lnkPrev" class="spec" style="margin-top:13px"><div class="sh"><span class="eyebrow">Links this will build</span></div>
         <pre>${prev(a.locId)}</pre></div>
     </div>
@@ -2718,12 +2741,25 @@ function openLinkEditor(a){
       <button class="btn pri" id="lnkSave">${ic('check')}Save</button></div></div>`);
   const inp=$('#lnkIn'); inp.focus();
   inp.oninput=()=>{ $('#lnkPrev').querySelector('pre').textContent = prev(parseLoc(inp.value)); };
-  $('#lnkSave').onclick=()=>{
+  $('#lnkSave').onclick=async()=>{
     const id=parseLoc(inp.value);
     if(!id){ toast('Paste the subaccount URL or its location ID','bad'); inp.focus(); return; }
-    a.locId=id; closeModal(); window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'link_updated', description:id?'Communicator link updated':'Communicator link cleared'}); render(); toast('Communicator link saved');
+    const token=($('#lnkKey')&&$('#lnkKey').value||'').trim();
+    const clear=!!($('#lnkClearKey')&&$('#lnkClearKey').checked);
+    if(token||clear){
+      const res=await fetch('/api/credentials', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ accountId:a.id, apiKey:clear?'':token, clear }) });
+      const j=await res.json().catch(()=>({}));
+      if(!res.ok){ toast(j.error||'Could not save the API token','bad'); return; }
+      window.__fosKeys=window.__fosKeys||{};
+      window.__fosKeys[a.id]=!!j.hasKey;
+      recordActivity({accountId:a.id, type:'link_updated', description:j.hasKey?'Communicator API token saved':'Communicator API token removed'});
+    }
+    const linkChanged=a.locId!==id;
+    a.locId=id; closeModal(); window.__fosSaveMode='now';
+    if(linkChanged) recordActivity({accountId:a.id, type:'link_updated', description:'Communicator link updated'});
+    render(); toast('Communicator access saved');
   };
-  const cl=$('#lnkClear'); if(cl) cl.onclick=()=>{ delete a.locId; closeModal(); render(); toast('Link removed'); };
+  const cl=$('#lnkClear'); if(cl) cl.onclick=()=>{ delete a.locId; closeModal(); window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'link_updated', description:'Communicator link cleared'}); render(); toast('Link removed'); };
 }
 function openDeleteAcct(a){
   if(!isOwner()){ toast('View only — only the owner can delete subaccounts','bad'); return; }
@@ -2744,7 +2780,7 @@ function openDeleteAcct(a){
     const i=ACCOUNTS.findIndex(x=>x.id===a.id);
     if(i>-1) ACCOUNTS.splice(i,1);
     delete MARKS[a.id]; delete FIND[a.id]; delete NOTES[a.id]; delete OVERRIDE[a.id];
-    S.acct=null; S.view='accounts'; window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'subaccount_removed', description:'Removed subaccount '+a.name}); if(location.pathname.startsWith('/subaccount/')) history.pushState({view:'accounts'},'','/'); render(); toast(a.name+' removed from the console');
+    S.acct=null; S.view='accounts'; window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'subaccount_removed', description:'Removed subaccount '+a.name}); fetch('/api/credentials?accountId='+encodeURIComponent(a.id), {method:'DELETE'}).catch(()=>{}); if(location.pathname.startsWith('/subaccount/')) history.pushState({view:'accounts'},'','/'); render(); toast(a.name+' removed from the console');
   };
 }
 function openFinding(f,a){

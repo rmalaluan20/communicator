@@ -4,6 +4,7 @@ import { loadWorkspace, findAccount, publicAccount } from '@/lib/workspace'
 import { writeActivity } from '@/lib/activity'
 import { loadAiSettings, resolveAi, completeText } from '@/lib/ai'
 import { buildAudit, fallbackSummary } from '@/lib/audit'
+import { loadCommunicatorToken, readCommunicator } from '@/lib/ghl'
 
 export const dynamic = 'force-dynamic'
 
@@ -38,7 +39,9 @@ export async function POST(request) {
   const groups = Array.isArray(ws.data.GROUPS) ? ws.data.GROUPS : []
   const marks = ws.data.MARKS && ws.data.MARKS[accountId]
   const findings = (ws.data.FIND && ws.data.FIND[accountId]) || {}
-  const judged = buildAudit(account, groups, marks, findings)
+  const token = await loadCommunicatorToken(accountId).catch(() => '')
+  const live = await readCommunicator({ token, locationId: account.locId || '' })
+  const judged = buildAudit(account, groups, marks, findings, live)
 
   let summary = fallbackSummary(account, judged)
   try {
@@ -64,7 +67,10 @@ export async function POST(request) {
         'You write the narrative for a FenceOS onboarding audit.',
         'The JSON you receive is already judged. Do not change any status.',
         'A checklist tick is not proof that a requirement is done.',
-        'If a category is unable, say it could not be verified because there is no live Communicator connection.',
+        'Use the reason already written on each item.',
+        live.connected
+          ? 'Communicator was read with this subaccount API token. If an item is unable, the API does not expose that check.'
+          : 'If an item says the Communicator token is missing or was rejected, say that plainly.',
         'Reply as JSON: {"summary":"..."} with 2-4 sentences about this subaccount only.',
       ].join(' '),
       user: JSON.stringify(packet),
