@@ -1,5 +1,6 @@
 import { pool } from '@/lib/db'
 import { getSessionUser } from '@/lib/auth'
+import { writeActivity } from '@/lib/activity'
 
 export const dynamic = 'force-dynamic'
 
@@ -49,6 +50,13 @@ export async function POST(request) {
         await pool.query('UPDATE guest_sessions SET last_seen_at = now() WHERE sid = $1', [user.sid])
       } catch (e) {}
     }
+    await writeActivity({
+      user,
+      accountId,
+      type: 'note_added',
+      description: 'Note added',
+      metadata: { noteId: rows[0].id },
+    })
     return Response.json({ ok: true, note: rows[0] })
   } catch (e) {
     return Response.json({ error: 'unavailable' }, { status: 503 })

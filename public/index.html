@@ -894,9 +894,92 @@ function signOut(){ if(window.__fosAuth){ window.__fosAuth.logout(); return; } S
 
 /* ---------- activity log (reflects real actions in this workspace) ---------- */
 let ACTIVITY = [];
+let ACTIVITY_ROWS = [];
 const actor = ()=> (SESSION.user ? SESSION.user.n : 'You');
 function relTime(ts){ const s=Math.max(0,(Date.now()-ts)/1000); if(s<45) return 'just now'; if(s<3600) return Math.floor(s/60)+'m ago'; if(s<86400) return Math.floor(s/3600)+'h ago'; try{return new Date(ts).toLocaleDateString();}catch(e){return '';} }
-function logActivity(k,b,m){ ACTIVITY.unshift({k,b,m,ts:Date.now()}); if(ACTIVITY.length>60) ACTIVITY.length=60; try{ render(); }catch(e){} }
+function fmtWhen(iso){
+  try { return new Date(iso).toLocaleString('en-US', { month:'long', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' }); }
+  catch(e){ return ''; }
+}
+function logActivity(){ /* history is written to the activity log only when an action passes a type */ }
+function recordActivity(entry){
+  if(!entry || !entry.type || !isOwner()) return;
+  fetch('/api/activity', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(entry),
+  }).then(r=>r.json()).then(j=>{
+    if(j && j.activity){
+      ACTIVITY_ROWS = [j.activity].concat(ACTIVITY_ROWS.filter(x=>x.id!==j.activity.id));
+      try{ render(); }catch(e){}
+    }
+  }).catch(()=>{});
+}
+function slugifyName(name){
+  const s=String(name||'').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/&/g,' and ').replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+  return s || 'subaccount';
+}
+function ensureSlugs(){
+  const used=new Set();
+  let changed=false;
+  ACCOUNTS.forEach(a=>{
+    const base = (a.slug && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(a.slug)) ? a.slug : slugifyName(a.name);
+    let s=base, n=2;
+    while(used.has(s)) s = base+'-'+(n++);
+    if(a.slug!==s){ a.slug=s; changed=true; }
+    used.add(s);
+  });
+  return changed;
+}
+function acctBySlug(slug){ return ACCOUNTS.find(a=>a.slug===slug) || null; }
+function accountPath(a){ return '/subaccount/'+encodeURIComponent(a.slug); }
+function openAccount(id, opts){
+  const a=ACCOUNTS.find(x=>x.id===id);
+  if(!a){ toast('That subaccount is not in the workspace','bad'); return; }
+  if(!a.slug) ensureSlugs();
+  S.acct=a.id; S.view='account';
+  const url=accountPath(a);
+  const st={view:'account', id:a.id};
+  if(location.pathname!==url){
+    if(opts && opts.replace) history.replaceState(st, '', url);
+    else history.pushState(st, '', url);
+  } else history.replaceState(st, '', url);
+  render();
+  if(!opts || !opts.keepScroll) window.scrollTo(0,0);
+}
+function applyPath(path){
+  const m=String(path||'').match(/^\/subaccount\/([^/]+)\/?$/);
+  if(!m) return false;
+  const a=acctBySlug(decodeURIComponent(m[1]));
+  if(!a){ S.view='accounts'; S.acct=null; toast('That subaccount link does not match a record','bad'); return false; }
+  S.acct=a.id; S.view='account';
+  return true;
+}
+const ACT_LABEL = {
+  ai_audit_started:'AI audit started', ai_audit_completed:'AI audit completed', ai_audit_failed:'AI audit failed',
+  checklist_completed:'Checklist item completed', checklist_reopened:'Checklist item reopened', checklist_updated:'Checklist updated',
+  status_changed:'Status changed', subaccount_updated:'Subaccount updated', subaccount_created:'Subaccount created',
+  subaccount_removed:'Subaccount removed', note_added:'Note added', logo_updated:'Logo updated', link_updated:'Link updated'
+};
+function feedItem(f){
+  if(f.activity_type){
+    const map=({ai_audit_completed:['ok-soft','ok','check'],ai_audit_failed:['crit-soft','crit','alert'],checklist_reopened:['warn-soft','warn','alert'],note_added:['accent-soft','accent','dot']})[f.activity_type]||['accent-soft','accent','dot'];
+    const meta=f.metadata||{};
+    const extra = f.activity_type==='ai_audit_completed'
+      ? `<div class="dim" style="font-size:12px;margin-top:2px">Result: ${esc(String(meta.completion!=null?meta.completion+'% verified':'—'))}${meta.issues!=null?` &middot; Issues: ${meta.issues}`:''}${meta.blockers!=null?` &middot; Blockers: ${meta.blockers}`:''}</div>`
+      : '';
+    const click = meta.auditId ? ` data-audit="${meta.auditId}" style="cursor:pointer"` : '';
+    return `<div class="feed-item"${click}><div class="fi" style="background:var(--${map[0]});color:var(--${map[1]})">${ic(map[2],11)}</div>
+      <div class="txt"><b>${esc(ACT_LABEL[f.activity_type]||f.activity_type)}</b> ${esc(f.description||'')}${extra}<time>${fmtWhen(f.created_at)}</time></div></div>`;
+  }
+  const map=({ok:['ok-soft','ok','check'],crit:['crit-soft','crit','alert'],warn:['warn-soft','warn','alert'],info:['accent-soft','accent','dot']})[f.k]||['accent-soft','accent','dot'];
+  return `<div class="feed-item"><div class="fi" style="background:var(--${map[0]});color:var(--${map[1]})">${ic(map[2],11)}</div>
+    <div class="txt"><b>${esc(f.b||'Workspace')}</b> ${f.m||''}<time>${f.ts?relTime(f.ts):''}</time></div></div>`;
+}
+function activityFeed(){
+  const live = ACTIVITY_ROWS.map(r=>({...r, _ts:new Date(r.created_at).getTime()}));
+  const legacy = (ACTIVITY||[]).filter(f=>f && (f.m||f.b)).map(f=>({...f, _ts:f.ts||0}));
+  return live.concat(legacy).sort((a,b)=>b._ts-a._ts);
+}
 
 function vGate(){
   if(gateMode==='owner'){
@@ -1056,8 +1139,10 @@ function go(v){
   if(OWNER_ONLY_VIEWS.includes(v) && !isOwner()){ toast('Owner only','bad'); return; }
   if(v==='findings'){ v='verify'; }
   if(v==='plan'){ v='dashboard'; }
-  
-  S.view=v; render(); window.scrollTo(0,0);
+  if(v!=='audit') S.auditFor=null;
+  S.view=v;
+  if(v!=='account' && location.pathname.startsWith('/subaccount/')) history.pushState({view:v}, '', '/');
+  render(); window.scrollTo(0,0);
 }
 
 /* ============================================================
@@ -1100,17 +1185,20 @@ function paintAuth(){
 /* Sticky Update bar: shown only to the owner while there are pending edits.
    Clicking Update commits to Supabase, verifies, and repaints from the DB. */
 function paintSaveBar(){
-  const show = isOwner() && window.__fosSave && window.__fosSave.dirty();
+  const api = window.__fosSave;
+  const busy = api && api.saving();
+  const err = api && api.error && api.error();
   let bar = document.getElementById('saveBar');
-  if(!show){ if(bar) bar.remove(); return; }
+  if(!isOwner() || (!busy && !err)){ if(bar) bar.remove(); return; }
   if(!bar){ bar=document.createElement('div'); bar.id='saveBar'; document.body.appendChild(bar); }
-  const busy = window.__fosSave.saving();
   bar.setAttribute('style','position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:120;display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line-2);box-shadow:var(--shadow);border-radius:12px;padding:9px 10px 9px 15px;max-width:calc(100vw - 24px)');
-  bar.innerHTML = `<span style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px;color:var(--warn)">${ic('alert',15)}<span>Unsaved changes</span></span>
-    <button class="btn sm" id="sbDiscard" ${busy?'disabled':''}>Discard</button>
-    <button class="btn sm pri" id="sbUpdate" ${busy?'disabled':''} style="min-width:100px;justify-content:center">${busy?'Updating&hellip;':'Update'+ic('arrow',13)}</button>`;
-  const u=document.getElementById('sbUpdate'); if(u) u.onclick=()=>window.__fosSave.commit();
-  const d=document.getElementById('sbDiscard'); if(d) d.onclick=()=>window.__fosSave.discard();
+  if(err){
+    bar.innerHTML = `<span style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:7px;color:var(--crit);max-width:46ch">${ic('alert',15)}<span>${esc(err)}</span></span>
+      <button class="btn sm" id="sbDiscard">Load latest</button>`;
+    const d=document.getElementById('sbDiscard'); if(d) d.onclick=()=>window.__fosSave.discard();
+  } else {
+    bar.innerHTML = `<span style="font-size:13px;font-weight:600">Saving&hellip;</span>`;
+  }
 }
 function topActions(){
   if(S.view==='dashboard' && !signedIn()) return '';
@@ -1119,11 +1207,15 @@ function topActions(){
   return '';
 }
 function chatCtx(){
+  if(S.view==='account'){
+    const a=ACCOUNTS.find(x=>x.id===S.acct);
+    return a ? a.name : 'Subaccount';
+  }
   if(S.view==='workspace'){
     const t=TASKS[S.run.cur];
-    return S.run.state==='running'?`Working on: ${t?t.n:'—'}`: S.run.state==='failed'?'Blocked — 1 error':S.run.state==='blocked'?'Waiting on you':'Cedar Creek Fence Co.';
+    return S.run.state==='running'?`Working on: ${t?t.n:'—'}`: S.run.state==='failed'?'Blocked — 1 error':S.run.state==='blocked'?'Waiting on you':'Setup run';
   }
-  return {dashboard:'6 subaccounts',wizard:'New subaccount',plan:'Reviewing setup plan',verify:'Verification',complete:'Setup complete',audit:'Audit log'}[S.view]||'Idle';
+  return {dashboard:'All subaccounts',wizard:'New subaccount',plan:'Reviewing setup plan',verify:'Findings',complete:'Setup complete',audit:'Activity log',settings:'Settings'}[S.view]||'Onboarding';
 }
 
 /* ============================================================
@@ -1143,7 +1235,21 @@ function vDash(){
     ${tile(n,'Total subaccounts','Across the FenceOS agency',{n:'layers',bg:'accent-soft',fg:'accent'},'',
       `<div class="spark">${[3,4,2,5,4,6,5,7].map(h=>`<i style="height:${h*3}px"></i>`).join('')}</div>`)}
     ${tile(clear,'Audited clear','No open findings',{n:'check',bg:'ok-soft',fg:'ok'})}
-    ${tile(ACCOUNTS.reduce((m,a)=>m+(TOTAL_ITEMS-markedCount(a.id)),0),'Incomplete items','Unticked across every checklist',{n:'list',bg:'warn-soft',fg:'warn'})}
+    ${tile(ACCOUNTS.reduce((m,a)=>m+incompleteGroups(a.id).length,0),'Incomplete items','Main checklist categories still open',{n:'list',bg:'warn-soft',fg:'warn'})}
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <div class="pad" style="border-bottom:1px solid var(--line)"><h2>Incomplete items</h2>
+      <p class="dim" style="font-size:12px;margin-top:3px">Main checklist categories only. A category stays incomplete until every item inside it is done.</p></div>
+    ${(()=>{
+      const rows=[];
+      ACCOUNTS.forEach(a=>incompleteGroups(a.id).forEach(g=>rows.push({a,g})));
+      if(!rows.length) return '<div class="pad"><p class="dim" style="font-size:12.5px">Every main checklist category is complete.</p></div>';
+      return rows.slice(0,24).map(r=>`<button class="item" data-open="${r.a.id}" style="width:100%;text-align:left;background:transparent;border:0;border-bottom:1px solid var(--line)">
+        <span class="tick part" style="cursor:default"></span>
+        <div class="ibody"><b>${esc(r.g.n)}</b><span class="ihint">${esc(r.a.name)} &middot; ${r.g.st.done} of ${r.g.st.total} internal items</span></div>
+        <span class="chip c-warn" style="flex:none;align-self:center">Incomplete</span>
+      </button>`).join('')+(rows.length>24?`<div class="pad dim" style="font-size:12px">${rows.length-24} more on the Findings page.</div>`:'');
+    })()}
   </div>
   <div class="grid-2">
     <div class="card">
@@ -1161,11 +1267,7 @@ function vDash(){
     </div>
     <div class="card">
       <div class="pad" style="border-bottom:1px solid var(--line)"><h2>Recent activity</h2></div>
-      <div class="feed">${ACTIVITY.length ? ACTIVITY.slice(0,12).map(f=>{
-        const map=({ok:['ok-soft','ok','check'],crit:['crit-soft','crit','alert'],warn:['warn-soft','warn','alert'],hand:['hand-soft','hand','hand'],info:['accent-soft','accent','dot']})[f.k]||['ok-soft','ok','check'];
-        return `<div class="feed-item"><div class="fi" style="background:var(--${map[0]});color:var(--${map[1]})">${ic(map[2],11)}</div>
-        <div class="txt"><b>${esc(f.b)}</b> ${f.m}<time>${f.ts?relTime(f.ts):((f.t||'')+' AM')}</time></div></div>`;}).join('')
-        : `<div class="pad"><p class="dim" style="font-size:12.5px">No activity yet. Your actions &mdash; creating subaccounts, adding notes, running audits &mdash; will appear here.</p></div>`}</div>
+      <div class="feed">${activityFeed().length ? activityFeed().slice(0,12).map(feedItem).join('') : `<div class="pad"><p class="dim" style="font-size:12.5px">No activity yet. Checklist changes, notes, and AI audits will appear here.</p></div>`}</div>
     </div>
   </div>`;
 }
@@ -1191,7 +1293,9 @@ function rowFor(a){
 function bindDash(){
   const s=$('#acctSearch');
   if(s) s.oninput=()=>{const q=s.value.toLowerCase();$$('#acctBody tr').forEach(r=>r.style.display=r.dataset.name.includes(q)?'':'none');};
-  $$('#acctBody tr').forEach(r=>r.onclick=()=>{ S.acct=r.dataset.acct; S.view='account'; render(); window.scrollTo(0,0); });
+  $$('#acctBody tr').forEach(r=>r.onclick=()=>openAccount(r.dataset.acct));
+  $$('[data-open]').forEach(b=>b.onclick=()=>openAccount(b.dataset.open));
+  $$('[data-audit]').forEach(b=>b.onclick=()=>openAudit(b.dataset.audit));
 }
 
 /* ============================================================
@@ -1328,10 +1432,13 @@ function bindWiz(){
     }
     if(S.wizStep===3){
       const id='loc_'+Math.random().toString(36).slice(2,6).replace(/^(.)/,c=>c.toUpperCase());
-      const acc={id,name:S.form.bname,city:S.form.contact,status:'creation',prog:0,block:'none',note:'',created:'Sep 9, 2026',days:0,init:acctInitials(S.form.bname),grp:'fenceOS',
+      const acc={id,name:S.form.bname,city:S.form.contact,status:'creation',prog:0,block:'none',note:'',created:'Sep 9, 2026',days:0,init:acctInitials(S.form.bname),grp:'fenceOS',slug:slugifyName(S.form.bname),
         phone:S.form.phone,email:S.form.email,web:S.form.web,addr:S.form.addr,locality:S.form.city,state:S.form.state,zip:S.form.zip,tz:S.form.tz,industry:S.form.industry};
       ACCOUNTS.unshift(acc); MARKS[id]=new Set(); FIND[id]={}; NOTES[id]=[];
-      S.acct=id; S.view='account'; logActivity('ok',actor(),'created subaccount <b>'+esc(acc.name)+'</b>'); render(); window.scrollTo(0,0);
+      ensureSlugs();
+      window.__fosSaveMode='now';
+      recordActivity({accountId:id, type:'subaccount_created', description:'Created subaccount '+acc.name});
+      openAccount(id);
       toast('Subaccount added — work the checklist, then run the audit'); return;
     }
     S.wizStep++; render(); window.scrollTo(0,0);
@@ -1706,6 +1813,10 @@ function score(){
   const w={pass:1,warn:.75,fail:0};
   return Math.round(CHECKS.reduce((a,c)=>a+w[checkState(c)],0)/CHECKS.length*100);
 }
+function incompleteGroups(aid){
+  if(!MARKS[aid]) return [];
+  return GROUPS.map(g=>({...g, st:groupStat(aid,g)})).filter(g=>g.st.total && g.st.done<g.st.total);
+}
 function incompleteOf(aid){
   const out=[];
   GROUPS.forEach(g=>g.items.forEach(it=>{
@@ -1717,12 +1828,12 @@ function incompleteOf(aid){
 function vVerify(){
   const f=S.findFilter||'all';
   const rows=[];
-  ACCOUNTS.forEach(ac=>incompleteOf(ac.id).forEach(x=>rows.push({ac,...x})));
+  ACCOUNTS.forEach(ac=>incompleteGroups(ac.id).forEach(g=>rows.push({ac,g})));
   const byAcct={}; rows.forEach(r=>{ (byAcct[r.ac.id]=byAcct[r.ac.id]||[]).push(r); });
   const accts=ACCOUNTS.filter(ac=>byAcct[ac.id]&&(f==='all'||f===ac.id));
   return `<div style="max-width:1080px">
   <div class="sec-head"><h1>Findings</h1><div class="sp"></div>
-    <span class="dim" style="font-size:12.5px">${rows.length} item${rows.length===1?'':'s'} still to complete across ${Object.keys(byAcct).length} subaccount${Object.keys(byAcct).length===1?'':'s'}</span></div>
+    <span class="dim" style="font-size:12.5px">${rows.length} main categor${rows.length===1?'y':'ies'} still incomplete across ${Object.keys(byAcct).length} subaccount${Object.keys(byAcct).length===1?'':'s'}</span></div>
   <div class="card" style="margin-bottom:14px">
     <div class="pad" style="display:flex;gap:9px;align-items:center;flex-wrap:wrap">
       <div class="filters">
@@ -1731,42 +1842,27 @@ function vVerify(){
       </div>
     </div>
   </div>
-  ${accts.length?accts.map(ac=>{
-    const list=byAcct[ac.id];
-    const groups={}; list.forEach(r=>{ (groups[r.g.id]=groups[r.g.id]||{g:r.g,items:[]}).items.push(r); });
-    return `<div class="card" style="margin-bottom:14px">
+  ${accts.length?accts.map(ac=>`<div class="card" style="margin-bottom:14px">
       <div class="pad" style="border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <div class="biz"><div class="sq ${ac.logo?'haslogo':''}">${ac.logo?`<img src="${ac.logo}" alt="">`:ac.init}</div><div><b>${esc(ac.name)}</b><small>${esc(ac.city)}</small></div></div>
         <div class="sp" style="margin-left:auto"></div>
         ${badge(acctStage(ac.id))}
-        <span class="chip c-warn"><i class="dot"></i>${list.length} incomplete</span>
+        <span class="chip c-warn"><i class="dot"></i>${byAcct[ac.id].length} incomplete</span>
         <span class="num dim" style="font-size:12px">${readiness(ac.id)}%</span>
         <button class="btn sm" data-open="${ac.id}">Open</button>
       </div>
-      ${Object.values(groups).map(gr=>`
-        <div style="padding:9px 15px 3px;background:var(--panel-2);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px">
-          <span class="eyebrow">${gr.g.n}</span><span class="dim" style="font-size:11px">${gr.items.length} of ${gr.g.items.length} outstanding</span>
-        </div>
-        ${gr.items.map(r=>`<div class="item">
-          <button class="tick" data-fk="${ac.id}|${r.k}" role="checkbox" aria-checked="false" aria-label="${esc(r.it.n)}"></button>
-          <div class="ibody"><b>${r.it.n}</b>
-            ${r.it.h?`<span class="ihint">${r.it.h}</span>`:''}
-            ${r.found?`<span class="ifound" style="color:var(--${VERDICT[r.v].col})">${ic(VERDICT[r.v].g||'alert',11)} ${r.found}</span>`:''}</div>
-          ${r.found?`<span class="chip ${VERDICT[r.v].c}" style="flex:none;align-self:center"><i class="dot"></i>${VERDICT[r.v].l}</span>`:'<span class="chip c-idle" style="flex:none;align-self:center">Not done</span>'}
-        </div>`).join('')}`).join('')}
-    </div>`;
-  }).join('')
-  :`<div class="card"><div class="pad"><p class="dim" style="font-size:13px">Nothing outstanding. Every checklist item on every subaccount is ticked.</p></div></div>`}
+      ${byAcct[ac.id].map(r=>`<div class="item">
+          <div class="ibody"><b>${esc(r.g.n)}</b>
+            <span class="ihint">${r.g.st.done} of ${r.g.st.total} internal items checked</span></div>
+          <span class="chip c-warn" style="flex:none;align-self:center">Incomplete</span>
+        </div>`).join('')}
+    </div>`).join('')
+  :`<div class="card"><div class="pad"><p class="dim" style="font-size:13px">Every main checklist category is complete.</p></div></div>`}
   </div>`;
 }
 function bindVerify(){
   $$('[data-ff]').forEach(b=>b.onclick=()=>{ S.findFilter=b.dataset.ff; render(); });
-  $$('[data-open]').forEach(b=>b.onclick=()=>{ S.acct=b.dataset.open; S.view='account'; render(); window.scrollTo(0,0); });
-  $$('[data-fk]').forEach(b=>b.onclick=()=>{
-    const [aid,k]=b.dataset.fk.split('|');
-    toggleMark(aid,k);
-    toast((ITEM[k]?ITEM[k].n:'Item')+' marked complete');
-  });
+  $$('[data-open]').forEach(b=>b.onclick=()=>openAccount(b.dataset.open));
 }
 function fixWithAI(){
   modal(`<div class="modal" role="dialog" aria-modal="true">
@@ -1827,57 +1923,91 @@ function bindDone(){}
 /* ============================================================
    VIEW · AUDIT LOG
    ============================================================ */
-const SEED_AUDIT=[
-  {time:'9:58 AM',task:'Verification',msg:'Ran 12 configuration checks on Pioneer Fence Group',kind:'warnl',tech:'10 pass · 2 warn · 0 fail'},
-  {time:'9:31 AM',task:'Build brand board',msg:'Rendered and uploaded 3 assets for Blue Ridge Fencing',kind:'ok',tech:'logo 350×180 · icon 300×300 · banner 1819×646'},
-  {time:'8:47 AM',task:'Create Communicator subaccount',msg:'Created location loc_9Wt1 — Blue Ridge Fencing',kind:'ok',tech:'POST /v1/locations/ → 201 Created'}
-];
 function vAudit(){
-  const rows = S.run.logs.length? S.run.logs.slice().reverse() : SEED_AUDIT;
-  return `<div class="sec-head"><h1>Audit log</h1><div class="sp"></div></div>
+  const shown = S.auditFor ? activityFeed().filter(r=>r.subaccount_id===S.auditFor) : activityFeed();
+  return `<div class="sec-head"><h1>Activity log</h1><div class="sp"></div>
+    ${S.auditFor?`<button class="btn sm" onclick="S.auditFor=null;render()">All subaccounts</button>`:''}</div>
   <div class="card">
-    <div class="pad" style="border-bottom:1px solid var(--line);display:flex;gap:9px;align-items:center;flex-wrap:wrap">
-      <div class="filters">
-        <button class="btn sm on" data-flt="all">All</button>
-        <button class="btn sm" data-flt="ok">Success</button>
-        <button class="btn sm" data-flt="warnl">Warning</button>
-        <button class="btn sm" data-flt="faill">Failed</button>
-        <button class="btn sm" data-flt="hand">Human step</button>
-      </div>
-      <div class="sp" style="margin-left:auto"></div>
-      <div class="srch">${ic('srch')}<input id="auditSearch" placeholder="Search actions"></div>
-    </div>
-    <div class="scroll-x">
-    <table class="tbl"><thead><tr>
-      <th style="width:88px">Time</th><th style="width:96px">Agent</th><th>Action</th>
-      <th class="hide-sm">Target</th><th style="width:104px">Result</th><th style="width:24px"></th>
-    </tr></thead><tbody id="auditBody">
-    ${rows.map((r,i)=>{
-      const res={ok:['c-ok','Success'],run:['c-run','Running'],warnl:['c-warn','Warning'],faill:['c-crit','Failed'],hand:['c-hand','Handed off']}[r.kind]||['c-idle','Info'];
-      return `<tr class="audit-row" data-a="${i}" data-k="${r.kind}" data-s="${esc((r.msg+' '+r.task).toLowerCase())}">
-        <td class="mono dim" style="font-size:11.5px;white-space:nowrap">${r.time}</td>
-        <td class="muted" style="font-size:12.5px">Setup Agent</td>
-        <td><b style="font-weight:500">${esc(r.msg)}</b><div class="dim" style="font-size:11.5px">${esc(r.task)}</div></td>
-        <td class="mono dim hide-sm" style="font-size:11.5px">loc_3Ax8Qm</td>
-        <td><span class="chip ${res[0]}">${res[1]}</span></td>
-        <td class="dim">${ic('chev',13)}</td></tr>
-      <tr class="audit-detail hide" data-ad="${i}"><td colspan="6"><div class="inner">
-        ${r.tech?`<pre>${esc(r.tech)}</pre>`:'<span class="dim" style="font-size:12.5px">No technical payload recorded for this entry.</span>'}
-      </div></td></tr>`;
-    }).join('')}
-    </tbody></table></div>
-  </div>
-  ${S.run.logs.length?'':'<p class="dim" style="font-size:12.5px;margin-top:12px">Showing agency-wide entries. Run a setup to populate this account&rsquo;s log.</p>'}`;
+    <div class="pad" style="border-bottom:1px solid var(--line)"><p class="dim" style="font-size:12.5px">Recorded actions only. Opening a page does not add an entry.</p></div>
+    <div class="feed">${shown.length?shown.slice(0,80).map(feedItem).join(''):`<div class="pad"><p class="dim" style="font-size:12.5px">No activity recorded yet.</p></div>`}</div>
+  </div>`;
 }
 function bindAudit(){
-  $$('.audit-row').forEach(r=>r.onclick=()=>{ const d=$(`[data-ad="${r.dataset.a}"]`); d.classList.toggle('hide'); });
-  const s=$('#auditSearch');
-  if(s) s.oninput=()=>{const q=s.value.toLowerCase();$$('.audit-row').forEach(r=>{const hit=r.dataset.s.includes(q);r.style.display=hit?'':'none';$(`[data-ad="${r.dataset.a}"]`).classList.add('hide');});};
-  $$('[data-flt]').forEach(b=>b.onclick=()=>{
-    $$('[data-flt]').forEach(x=>x.classList.remove('on')); b.classList.add('on');
-    const f=b.dataset.flt;
-    $$('.audit-row').forEach(r=>{ r.style.display = (f==='all'||r.dataset.k===f)?'':'none'; $(`[data-ad="${r.dataset.a}"]`).classList.add('hide'); });
-  });
+  $$('[data-audit]').forEach(b=>b.onclick=()=>openAudit(b.dataset.audit));
+}
+async function runAiAudit(a){
+  if(!isOwner()){ toast('Only the owner can run an AI audit','bad'); return; }
+  modal(`<div class="modal" role="dialog" aria-modal="true" style="width:min(480px,100%)">
+    <div class="modal-head"><div class="mi" style="background:var(--accent-soft);color:var(--accent)">${ic('bot',17)}</div>
+      <div><h2>Running AI audit</h2><p class="muted" style="font-size:13px;margin-top:3px">${esc(a.name)}</p></div></div>
+    <div class="modal-body"><p>Checking the subaccount record against each main checklist category. Checklist ticks are not treated as proof.</p></div></div>`);
+  try {
+    const res = await fetch('/api/audit', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ accountId:a.id }) });
+    const j = await res.json().catch(()=>({}));
+    if(!res.ok){ closeModal(); toast(j.error||'The audit did not finish','bad'); return; }
+    if(window.__fosActivity) await window.__fosActivity.refresh();
+    if(j.checklistUpdated && window.__fosReload) await window.__fosReload();
+    closeModal();
+    if(j.audit && j.audit.id) openAudit(j.audit.id);
+    else toast('AI audit completed');
+  } catch(e) {
+    closeModal();
+    toast('The audit could not be reached','bad');
+  }
+}
+async function loadAiSettings(){
+  if(window.__fosAiLoaded || window.__fosAiLoading) return;
+  window.__fosAiLoading = true;
+  try {
+    const res = await fetch('/api/ai', { cache:'no-store' });
+    if(res.ok) window.__fosAi = await res.json();
+  } catch(e) {}
+  window.__fosAiLoading = false;
+  window.__fosAiLoaded = true;
+  if(S.view==='settings' && S.setTab==='ai') render();
+}
+async function saveAiSettings(){
+  const body = {
+    provider: ($('#aiProvider')&&$('#aiProvider').value)||'openai',
+    model: ($('#aiModel')&&$('#aiModel').value)||'gpt-4o-mini',
+    enabled: !!($('#aiOn')&&$('#aiOn').checked),
+    applyChecklist: !!($('#aiApply')&&$('#aiApply').checked),
+  };
+  const key = ($('#aiKey')&&$('#aiKey').value||'').trim();
+  if(key) body.apiKey = key;
+  const res = await fetch('/api/ai', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const j = await res.json().catch(()=>({}));
+  if(!res.ok){ toast(j.error||'Could not save AI settings','bad'); return; }
+  window.__fosAi = j;
+  toast('AI settings saved');
+  render();
+}
+async function testAiSettings(){
+  const stat=$('#aiStat'); if(stat) stat.textContent='Testing…';
+  const res = await fetch('/api/ai/test', { method:'POST' });
+  const j = await res.json().catch(()=>({}));
+  if(stat) stat.textContent = j.status || 'Connection Failed';
+  toast(j.status || 'Connection Failed', j.ok ? undefined : 'bad');
+}
+async function openAudit(id){
+  const res = await fetch('/api/audits/'+id, {cache:'no-store'});
+  const j = await res.json().catch(()=>({}));
+  if(!res.ok || !j.audit){ toast('That audit could not be loaded','bad'); return; }
+  const a=j.audit, result=a.result||{};
+  const list=(title, arr)=>arr&&arr.length?`<p style="margin-top:10px"><b>${title}</b></p><ul>${arr.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:'';
+  modal(`<div class="modal" role="dialog" aria-modal="true" style="width:min(640px,100%);max-height:86vh;display:flex;flex-direction:column">
+    <div class="modal-head"><div class="mi" style="background:var(--accent-soft);color:var(--accent)">${ic('bot',17)}</div>
+      <div style="flex:1"><h2>AI audit</h2><p class="muted" style="font-size:13px;margin-top:3px">${esc(fmtWhen(a.created_at))} &middot; ${esc(a.auditor||'AI Agent')}</p></div></div>
+    <div class="modal-body" style="overflow:auto">
+      <p><b>${esc(a.overall||'')}</b> &middot; ${a.completion}% verified</p>
+      <p class="dim" style="font-size:12.5px;margin-top:6px">Verified ${a.verified} &middot; Incomplete ${a.incomplete} &middot; Blocked ${a.blocked} &middot; Needs review ${a.needs_review} &middot; Unable to verify ${a.unable}</p>
+      <p style="margin-top:12px">${esc(a.summary||'')}</p>
+      ${list('Incomplete', (result.issues&&result.issues.incomplete)||[])}
+      ${list('Blocked', (result.issues&&result.issues.blocked)||[])}
+      ${list('Needs review', (result.issues&&result.issues.needsReview)||[])}
+      ${list('Unable to verify', (result.issues&&result.issues.unable)||[])}
+    </div>
+    <div class="modal-foot"><button class="btn" onclick="closeModal()">Close</button></div></div>`);
 }
 
 /* ---------- Guest Logs (Owner/Admin only) ----------
@@ -2135,11 +2265,22 @@ function verdictOf(aid,k){
 const isFixed = (aid,k)=>!!FIND[aid][k] && isMarked(aid,k);
 const resolvedCount = aid=>Object.keys(FIND[aid]).filter(k=>ITEM[k]&&isMarked(aid,k)).length;
 const foundOf=(aid,k)=> (FIND[aid][k]||[])[1] || '';
-function toggleMark(aid,k){ if(!isOwner()){ toast('View only — only the owner can change the checklist','bad'); return; } MARKS[aid].has(k)?MARKS[aid].delete(k):MARKS[aid].add(k); render(); }
+function toggleMark(aid,k){
+  if(!isOwner()){ toast('View only — only the owner can change the checklist','bad'); return; }
+  const had=MARKS[aid].has(k);
+  had?MARKS[aid].delete(k):MARKS[aid].add(k);
+  const it=ITEM[k];
+  window.__fosSaveMode='now';
+  recordActivity({accountId:aid, type:had?'checklist_reopened':'checklist_completed', description:(had?'Reopened ':'Completed ')+(it?it.n:'checklist item')});
+  render();
+}
 function toggleGroup(aid,g){
+  if(!isOwner()){ toast('View only — only the owner can change the checklist','bad'); return; }
   const ks=g.items.map(i=>key(g.id,i.id));
   const all=ks.every(k=>MARKS[aid].has(k));
   ks.forEach(k=>all?MARKS[aid].delete(k):MARKS[aid].add(k));
+  window.__fosSaveMode='now';
+  recordActivity({accountId:aid, type:'checklist_updated', description:(all?'Reopened ':'Completed ')+g.n});
   render();
 }
 const markedCount = aid=>MARKS[aid].size;
@@ -2264,6 +2405,7 @@ function vAccount(){
         <div><h1 style="font-size:21px">${esc(a.name)}</h1>
           <div class="split" style="margin-top:5px;flex-wrap:wrap">
             ${hasLink(a)?`<span class="mono dim" style="font-size:12px">${a.locId}</span>`:'<span class="chip c-warn" style="font-size:10.5px"><i class="dot"></i>No Communicator link</span>'}
+            <span class="mono dim" style="font-size:12px">${accountPath(a)}</span>
             <button class="btn sm ghost" id="editLink" style="padding:1px 6px;font-size:11px">${hasLink(a)?'Edit link':'Add link'}</button>
             <button class="btn sm ghost" id="editLogo" style="padding:1px 6px;font-size:11px">${a.logo?'Change logo':'Add logo'}</button>
             <span class="dim">&middot;</span>
@@ -2295,8 +2437,9 @@ function vAccount(){
       <p class="dim" style="font-size:11.5px;margin-top:7px">You tick what you have done. The agent reads the subaccount and says whether it agrees.</p>
     </div>
     <div class="pad" style="border-top:1px solid var(--line);display:flex;gap:8px;flex-wrap:wrap">
-      ${isOwner()?`<button class="btn pri" id="runAudit">${ic('bot')}Run audit</button>`:''}
-      <button class="btn" onclick="go('audit')">${ic('list')}Activity log</button>
+      ${isOwner()?`<button class="btn pri" id="runAudit">${ic('bot')}Run AI audit</button>`:''}
+      <button class="btn" id="copyUrl">${ic('copy')}Copy link</button>
+      <button class="btn" id="openLog">${ic('list')}Activity log</button>
       ${hasLink(a)?`<a class="btn" href="${acctUrl(a)}" target="_blank" rel="noopener">${ic('ext')}Open in Communicator</a>`
                    :`<button class="btn" id="editLink2">${ic('ext')}Add Communicator link</button>`}
       ${isOwner()?`<button class="btn" id="editInfo">${ic('edit')}Edit information</button>`:''}
@@ -2390,7 +2533,12 @@ function vAccount(){
       </div>
 
       <div class="card">
-        <div class="pad" style="border-bottom:1px solid var(--line)"><h2>Sheet row</h2></div>
+        <div class="pad" style="border-bottom:1px solid var(--line)"><h2>Activity</h2></div>
+        <div class="feed">${activityFeed().filter(f=>f.subaccount_id===a.id).slice(0,12).map(feedItem).join('')||'<div class="pad"><p class="dim" style="font-size:12.5px">No activity for this subaccount yet.</p></div>'}</div>
+      </div>
+
+      <div class="card">
+        <div class="pad" style="border-bottom:1px solid var(--line)"><h2>Record</h2></div>
         <div class="pad">
           <dl class="kv" style="grid-template-columns:auto 1fr;font-size:12.5px">
             <dt>Pipeline Stage</dt><dd>${STATUS[acctStage(a.id)].l}</dd>
@@ -2421,8 +2569,11 @@ function bindAccount(){
   const eic=$('#editInfoCard'); if(eic) eic.onclick=()=>openEditInfo(a);
   const el2=$('#editLink2'); if(el2) el2.onclick=()=>openLinkEditor(a);
   const da=$('#delAcct'); if(da) da.onclick=()=>openDeleteAcct(a);
-  const ra=$('#runAudit'); if(ra) ra.onclick=()=>{ S.view='workspace'; S.run.logs=[]; S.run.ts={}; logActivity('ok','Setup Agent','started an audit on <b>'+esc(a.name)+'</b>'); render(); setTimeout(runStep,400); };
-  const sel=$('#stageSel'); if(sel) sel.onchange=()=>{ if(!isOwner()){ toast('View only — only the owner can change status','bad'); render(); return; } if(sel.value===derivedStage(a.id)) delete OVERRIDE[a.id]; else OVERRIDE[a.id]=sel.value; logActivity('info',actor(),'set <b>'+esc(a.name)+'</b> stage to '+STATUS[sel.value].l); toast('Pipeline stage set to '+STATUS[sel.value].l); };
+  const ra=$('#runAudit'); if(ra) ra.onclick=()=>runAiAudit(a);
+  const cu=$('#copyUrl'); if(cu) cu.onclick=()=>{ const url=location.origin+accountPath(a); if(navigator.clipboard) navigator.clipboard.writeText(url).then(()=>toast('Link copied')); else toast(url); };
+  const ol=$('#openLog'); if(ol) ol.onclick=()=>{ S.auditFor=a.id; S.view='audit'; if(location.pathname.startsWith('/subaccount/')) history.pushState({view:'audit'},'','/'); render(); };
+  $$('[data-audit]').forEach(b=>b.onclick=()=>openAudit(b.dataset.audit));
+  const sel=$('#stageSel'); if(sel) sel.onchange=()=>{ if(!isOwner()){ toast('View only — only the owner can change status','bad'); render(); return; } if(sel.value===derivedStage(a.id)) delete OVERRIDE[a.id]; else OVERRIDE[a.id]=sel.value; window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'status_changed', description:'Status set to '+STATUS[sel.value].l}); toast('Pipeline stage set to '+STATUS[sel.value].l); };
   const fnd=openFindings(a.id);
   $$('[data-find]').forEach(b=>b.onclick=()=>openFinding(fnd[b.dataset.find],a));
   const add=$('#noteAdd'), inp=$('#noteInput');
@@ -2462,7 +2613,7 @@ function openEditInfo(a){
       <div style="flex:1"><h2 id="editInfoTitle">Edit information</h2>
       <p class="muted" style="font-size:13px;margin-top:3px">${esc(a.name)}</p></div></div>
     <div class="modal-body" style="overflow-y:auto;flex:1;min-height:0">
-      <p class="muted" style="font-size:12.5px;margin-bottom:14px">These details are the console&rsquo;s copy of the client. Click Update afterward to save them for everyone.</p>
+      <p class="muted" style="font-size:12.5px;margin-bottom:14px">These details save to the shared database when you click Save.</p>
       <div class="fields">
         ${inp('name','Business name',a.name,1,'text','Cedar Creek Fence Co.')}
         ${inp('owner','Owner / primary contact',a.city,1,'text','Ellis Vaughn')}
@@ -2513,7 +2664,8 @@ function openEditInfo(a){
     set('industry',$('#e-industry').value);
     a.grp=$('#e-grp').value || a.grp || 'fenceOS';
     closeModal();
-    logActivity('info',actor(),'updated information for <b>'+esc(a.name)+'</b>');
+    window.__fosSaveMode='now';
+    recordActivity({accountId:a.id, type:'subaccount_updated', description:'Updated information for '+a.name});
     toast('Subaccount information updated');
   };
 }
@@ -2538,13 +2690,13 @@ function openAcctLogo(a){
     </div>
     <div class="modal-foot"><button class="btn" onclick="closeModal()">Cancel</button><div class="sp"></div>
       <button class="btn pri" id="alSave">${ic('check')}Save</button></div></div>`);
-  $('#alUp').onclick=()=>pickImage(d=>{ a.logo=d; closeModal(); render(); toast('Client logo set'); });
+  $('#alUp').onclick=()=>pickImage(d=>{ a.logo=d; closeModal(); window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'logo_updated', description:'Logo updated'}); render(); toast('Client logo set'); });
   $('#alUrl').onclick=()=>$('#alIn').focus();
-  const cl=$('#alClr'); if(cl) cl.onclick=()=>{ delete a.logo; closeModal(); render(); toast('Client logo removed'); };
+  const cl=$('#alClr'); if(cl) cl.onclick=()=>{ delete a.logo; closeModal(); window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'logo_updated', description:'Logo removed'}); render(); toast('Client logo removed'); };
   $('#alSave').onclick=()=>{ const v=($('#alIn').value||'').trim();
     if(v && !/^https?:\/\/|^data:image\//i.test(v)){ toast('Enter a full https:// image URL','bad'); return; }
     if(v) a.logo=v; else if(!/^data:/.test(a.logo||'')) delete a.logo;
-    closeModal(); render(); toast('Client logo saved'); };
+    closeModal(); window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'logo_updated', description:'Logo updated'}); render(); toast('Client logo saved'); };
 }
 function openLinkEditor(a){
   if(!isOwner()){ toast('View only — only the owner can edit subaccount details','bad'); return; }
@@ -2569,7 +2721,7 @@ function openLinkEditor(a){
   $('#lnkSave').onclick=()=>{
     const id=parseLoc(inp.value);
     if(!id){ toast('Paste the subaccount URL or its location ID','bad'); inp.focus(); return; }
-    a.locId=id; closeModal(); render(); toast('Communicator link saved');
+    a.locId=id; closeModal(); window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'link_updated', description:id?'Communicator link updated':'Communicator link cleared'}); render(); toast('Communicator link saved');
   };
   const cl=$('#lnkClear'); if(cl) cl.onclick=()=>{ delete a.locId; closeModal(); render(); toast('Link removed'); };
 }
@@ -2592,7 +2744,7 @@ function openDeleteAcct(a){
     const i=ACCOUNTS.findIndex(x=>x.id===a.id);
     if(i>-1) ACCOUNTS.splice(i,1);
     delete MARKS[a.id]; delete FIND[a.id]; delete NOTES[a.id]; delete OVERRIDE[a.id];
-    S.acct=null; S.view='accounts'; logActivity('crit',actor(),'removed subaccount <b>'+esc(a.name)+'</b>'); toast(a.name+' removed from the console');
+    S.acct=null; S.view='accounts'; window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'subaccount_removed', description:'Removed subaccount '+a.name}); if(location.pathname.startsWith('/subaccount/')) history.pushState({view:'accounts'},'','/'); render(); toast(a.name+' removed from the console');
   };
 }
 function openFinding(f,a){
@@ -2669,7 +2821,7 @@ function vAcctList(){
 }
 function bindAcctList(){
   $$('[data-af]').forEach(b=>b.onclick=()=>{ S.acctFilter=b.dataset.af; render(); });
-  $$('#listBody tr').forEach(r=>r.onclick=()=>{ S.acct=r.dataset.acct; S.view='account'; render(); window.scrollTo(0,0); });
+  $$('#listBody tr').forEach(r=>r.onclick=()=>openAccount(r.dataset.acct));
   const q=$('#listSearch');
   if(q) q.oninput=()=>{const v=q.value.toLowerCase();$$('#listBody tr').forEach(r=>r.style.display=r.dataset.name.includes(v)?'':'none');};
 }
@@ -2773,7 +2925,7 @@ const TEAM = [
 ];
 const PREFS = {cadence:'daily', notifyFinding:true, notifyClient:true, clientDays:7, notifyDigest:true, techDefault:false};
 const BRAND = {logoLight:'', logoDark:'', icon:'', favicon:''};
-const SET_TABS=[['branding','Branding'],['connections','Connections'],['checklist','Checklist template'],['schedule','Audit &amp; notifications'],['team','Team']];
+const SET_TABS=[['branding','Branding'],['connections','Connections'],['ai','AI Integration'],['checklist','Checklist template'],['schedule','Audit &amp; notifications'],['team','Team']];
 
 function vSettings(){
   const t=S.setTab;
@@ -2782,7 +2934,7 @@ function vSettings(){
     <div class="filters" style="margin-bottom:16px">
       ${SET_TABS.map(([k,l])=>`<button class="btn sm ${k===t?'on':''}" data-st="${k}">${l}</button>`).join('')}
     </div>
-    ${({branding:setBrand, connections:setConns, checklist:setTpl, schedule:setSched, team:setTeam}[t]||setBrand)()}
+    ${({branding:setBrand, connections:setConns, ai:setAi, checklist:setTpl, schedule:setSched, team:setTeam}[t]||setBrand)()}
   </div>`;
 }
 function currentDark(){ const t=getTheme(); return t==='dark' || (t==='system' && matchMedia('(prefers-color-scheme:dark)').matches); }
@@ -2806,6 +2958,32 @@ function pickImage(cb){
     if(f.size>600*1024){ toast('Image is over 600KB — use a smaller file','bad'); return; }
     const r=new FileReader(); r.onload=()=>cb(r.result); r.readAsDataURL(f); };
   inp.click();
+}
+function setAi(){
+  const s=window.__fosAi||{provider:'openai', model:'gpt-4o-mini', enabled:false, hasKey:false, source:null, applyChecklist:false};
+  return `<div class="card">
+    <div class="pad" style="border-bottom:1px solid var(--line)">
+      <h2>AI Integration</h2>
+      <p class="muted" style="font-size:12.5px;margin-top:4px;max-width:70ch">Used by AI Audit and Ask Agent. The key stays on the server. After it is saved, this page only shows whether a key is present.</p>
+    </div>
+    <div class="pad" style="display:flex;flex-direction:column;gap:12px">
+      <div class="fields" style="grid-template-columns:1fr 1fr;gap:10px">
+        <div class="f"><label for="aiProvider">AI provider</label>
+          <select id="aiProvider"><option value="openai" ${s.provider==='openai'?'selected':''}>OpenAI</option></select></div>
+        <div class="f"><label for="aiModel">Model</label>
+          <input id="aiModel" value="${esc(s.model||'gpt-4o-mini')}" placeholder="gpt-4o-mini"></div>
+      </div>
+      <div class="f"><label for="aiKey">API key ${s.hasKey?'<span class="opt">saved'+(s.source==='environment'?' in the server environment':'')+'</span>':'<span class="opt">not set</span>'}</label>
+        <input id="aiKey" type="password" autocomplete="new-password" placeholder="${s.hasKey?'Leave blank to keep the saved key':'Paste a key — it is not shown again'}"></div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:13px"><input type="checkbox" id="aiOn" ${s.enabled?'checked':''}> Enabled</label>
+      <label style="display:flex;gap:8px;align-items:flex-start;font-size:13px"><input type="checkbox" id="aiApply" ${s.applyChecklist?'checked':''}> <span>Let a verified audit mark checklist items the portal can actually see. Off by default. The audit never treats a manual tick as proof, and it does not clear existing ticks.</span></label>
+      <div class="btn-row">
+        <button class="btn pri" id="aiSave">Save</button>
+        <button class="btn" id="aiTest">Test connection</button>
+        <span id="aiStat" class="dim" style="font-size:12.5px;align-self:center">${s.hasKey&&s.enabled?'Ready to test':'Not connected'}</span>
+      </div>
+    </div>
+  </div>`;
 }
 function setBrand(){
   const slot=(k,label,desc,dark)=>`<div class="item" style="padding:15px;align-items:flex-start">
@@ -3046,6 +3224,11 @@ function openConsoleInvite(){
 
 function bindSettings(){
   $$('[data-st]').forEach(b=>b.onclick=()=>{ S.setTab=b.dataset.st; S.tplG=null; render(); });
+  if(S.setTab==='ai' && isOwner()) loadAiSettings();
+  const aiSave=$('#aiSave');
+  if(aiSave) aiSave.onclick=saveAiSettings;
+  const aiTest=$('#aiTest');
+  if(aiTest) aiTest.onclick=testAiSettings;
   const invc=$('#tmInviteConsole'); if(invc) invc.onclick=openConsoleInvite;
   $$('[data-bup]').forEach(b=>b.onclick=()=>pickImage(d=>{ BRAND[b.dataset.bup]=d; applyBrand(); render(); toast('Image set'); }));
   $$('[data-burl]').forEach(b=>b.onclick=()=>{
@@ -3203,18 +3386,28 @@ function agentReply(q){
 }
 function ask(q){
   pushMsg('u',esc(q));
-  // A guest's question is also a message to the team: persist it to Supabase
-  // so it reaches the owner's inbox (from any browser/device), then confirm.
+  const a=ACCOUNTS.find(x=>x.id===S.acct);
   if(isGuest() && window.__fosMsg){
-    const a=ACCOUNTS.find(x=>x.id===S.acct);
-    window.__fosMsg.send({ accountId:a?a.id:null, accountName:a?a.name:null, body:q }).then(res=>{
-      pushMsg('a', res&&res.ok
-        ? '<p>Thanks &mdash; your message has been sent to the FenceOS team and saved to their inbox. They&rsquo;ll follow up here.</p>'
-        : '<p class="dim">Sorry, your message could not be sent. Please try again.</p>');
-    });
+    window.__fosMsg.send({ accountId:a?a.id:null, accountName:a?a.name:null, body:q });
   }
-  setTimeout(()=>{ const r=agentReply(q);
-    pushMsg('a', r.m + (r.acts&&r.acts.length?`<div class="msg-act">${r.acts.join('')}</div>`:'')); },340);
+  pushMsg('a','<p class="dim">Looking at '+(a?esc(a.name):'the open subaccount')+'&hellip;</p>');
+  fetch('/api/agent', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ question:q, accountId:a?a.id:'' }),
+  }).then(r=>r.json().then(j=>({ok:r.ok, j}))).then(({ok,j})=>{
+    const text = ok && j.answer ? esc(j.answer).replace(/\n/g,'<br>') : esc((j&&j.error)||'The assistant could not answer.');
+    const el=$('#msgs');
+    if(el && el.lastElementChild){
+      const mb=el.lastElementChild.querySelector('.mb');
+      if(mb) mb.innerHTML='<p>'+text+'</p>';
+    }
+  }).catch(()=>{
+    const el=$('#msgs');
+    if(el && el.lastElementChild){
+      const mb=el.lastElementChild.querySelector('.mb');
+      if(mb) mb.innerHTML='<p>The assistant could not be reached. Try again.</p>';
+    }
+  });
 }
 function pushMsg(who,html){
   S.msgs.push({who,html});
@@ -3226,7 +3419,7 @@ function bindMsgActs(){
   $$('[data-act]').forEach(b=>b.onclick=()=>{
     const a=b.dataset.act;
     if(a==='findings'){ closeChat(); go('verify'); }
-    else if(a.startsWith('go:')){ closeChat(); S.acct=a.slice(3); S.view='account'; render(); window.scrollTo(0,0); }
+    else if(a.startsWith('go:')){ closeChat(); openAccount(a.slice(3)); }
   });
 }
 
@@ -3526,8 +3719,30 @@ render();
   function startSync() {
     if (syncTimer) return;
     syncTimer = setInterval(() => { refetchShared(); }, POLL_MS);
-    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refetchShared(); });
-    window.addEventListener('focus', () => { refetchShared(); });
+    setInterval(() => { pollSync(); }, 3000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { refetchShared(); pollSync(); } });
+    window.addEventListener('focus', () => { refetchShared(); pollSync(); });
+    window.addEventListener('popstate', () => {
+      if (!signedIn()) return;
+      if (!applyPath(location.pathname)) {
+        if (!location.pathname.startsWith('/subaccount/')) S.view = 'dashboard';
+      }
+      render();
+    });
+  }
+  let syncAt = null;
+  async function pollSync() {
+    try {
+      const res = await fetch('/api/sync', { cache: 'no-store' });
+      if (!res.ok) return;
+      const j = await res.json();
+      if (!j.at || j.at === syncAt) return;
+      const first = syncAt == null;
+      syncAt = j.at;
+      if (first) return;
+      await refetchShared();
+      if (window.__fosActivity) await window.__fosActivity.refresh();
+    } catch (e) {}
   }
 
   const fmtNoteDate = (iso) => { try { return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); } catch (e) { return ''; } };
@@ -3646,51 +3861,63 @@ render();
   // Edits are committed explicitly via the Update button (window.__fosSave),
   // never auto-saved.
   let ready = false;
+  let saveTimer = null;
+  let saveError = null;
 
-  // Explicit Update flow: commit pending edits, verify by re-reading the DB,
-  // then repaint from the saved record so the UI can never revert afterwards.
+  function scheduleSave() {
+    if (!ready || !isAdmin() || saving) return;
+    if (!unsaved()) { saveError = null; return; }
+    if (saveError) return;
+    const mode = window.__fosSaveMode || 'debounce';
+    window.__fosSaveMode = null;
+    clearTimeout(saveTimer);
+    if (mode === 'now') window.__fosSave.commit();
+    else saveTimer = setTimeout(() => { if (unsaved()) window.__fosSave.commit(); }, 700);
+  }
+
   window.__fosSave = {
     dirty() { return unsaved(); },
     saving() { return saving; },
+    error() { return saveError; },
     async commit() {
       if (saving || !unsaved()) return;
-      saving = true; render();                       // disable button, show "Updating…"
+      saving = true; saveError = null; render();
       const res = await saveServer();
       if (res.ok) {
-        // Verify: re-read the authoritative record and paint from it.
         const s = await loadServerWithRetry(3);
-        if (s && s.data) { apply(s.data); serverRev = s.updatedAt; }
+        if (s && s.data) { apply(s.data); ensureSlugs(); serverRev = s.updatedAt; }
         else if (res.updatedAt) { serverRev = res.updatedAt; }
         lastSavedJSON = canon();
         saving = false;
+        saveError = null;
         await loadNotes(); await loadMessages();
         applyBrand && applyBrand(); render();
-        if (typeof toast === 'function') toast('Changes saved');
       } else if (res.conflict) {
-        // Newer data exists — reload it rather than overwrite; user re-applies.
-        if (res.data) { apply(res.data); serverRev = res.updatedAt || serverRev; }
-        else { const s = await loadServer(); if (s && s.data) { apply(s.data); serverRev = s.updatedAt; } }
-        lastSavedJSON = canon();
         saving = false;
-        applyBrand && applyBrand(); render();
-        if (typeof toast === 'function') toast('This subaccount changed in another session — reloaded the latest. Re-apply and Update again.', 'bad');
+        saveError = 'Another session saved first. This change is still on screen and was not written. Load the latest version before trying again.';
+        render();
       } else {
-        // Failed: keep the pending edits, report honestly, allow retry.
-        saving = false; render();
-        if (typeof toast === 'function') toast(res.error || 'Unable to save changes. Please try again.', 'bad');
+        saving = false;
+        saveError = res.error || 'Unable to save changes. Please try again.';
+        render();
       }
     },
     async discard() {
       if (saving) return;
       saving = true; render();
       const s = await loadServerWithRetry(3);
-      if (s && s.data) { apply(s.data); serverRev = s.updatedAt; }
+      if (s && s.data) { apply(s.data); ensureSlugs(); serverRev = s.updatedAt; }
       lastSavedJSON = canon();
+      saveError = null;
       saving = false;
       await loadNotes(); await loadMessages();
       applyBrand && applyBrand(); render();
-      if (typeof toast === 'function') toast('Changes discarded');
+      if (typeof toast === 'function') toast('Loaded the latest saved version');
     },
+  };
+  window.__fosReload = async function () {
+    if (saving || unsaved()) return;
+    await refetchShared();
   };
 
   function mapUser(u) {
@@ -3704,13 +3931,35 @@ render();
   // Repaint the Update bar after every render so it reflects pending edits.
   if (typeof render === 'function') {
     const _render = render;
-    render = function () { const out = _render.apply(this, arguments); if (typeof paintSaveBar === 'function') paintSaveBar(); return out; };
+    render = function () {
+      const out = _render.apply(this, arguments);
+      if (typeof paintSaveBar === 'function') paintSaveBar();
+      if (typeof scheduleSave === 'function') scheduleSave();
+      return out;
+    };
   }
 
   async function fetchMe() {
     try { const r = await fetch('/api/auth/me', { cache: 'no-store' }); if (!r.ok) return null; return await r.json(); }
     catch (e) { return null; }
   }
+
+  window.__fosActivity = {
+    async refresh() {
+      try {
+        const res = await fetch('/api/activity?limit=80', { cache: 'no-store' });
+        if (!res.ok) return false;
+        const j = await res.json();
+        const list = j.activities || [];
+        const sig = JSON.stringify(list.map((r) => r.id));
+        if (sig === window.__fosActivitySig) return false;
+        window.__fosActivitySig = sig;
+        ACTIVITY_ROWS = list;
+        if (ready && !saving && !unsaved()) render();
+        return true;
+      } catch (e) { return false; }
+    },
+  };
 
   async function hydrate() {
     uid = SESSION.user.id;
@@ -3720,16 +3969,25 @@ render();
     if (s && s.data) {
       apply(s.data);
       serverRev = s.updatedAt;
+      lastSavedJSON = canon();
+      if (isAdmin() && ensureSlugs()) window.__fosSaveMode = 'now';
     } else {
-      apply(loadLocal());                // offline / empty-server fallback (display only)
-      if (s) serverRev = s.updatedAt;    // server reachable but empty
+      apply(loadLocal());
+      if (s) serverRev = s.updatedAt;
+      lastSavedJSON = canon();
     }
-    await loadNotes();                   // notes from their own store
-    await loadMessages();                // ask-the-agent inbox / outbox
-    await loadGuestLogs();               // owner-only guest sign-in history (no-op for non-admins)
-    applyBrand && applyBrand(); render();
+    await loadNotes();
+    await loadMessages();
+    await loadGuestLogs();
+    if (window.__fosActivity) await window.__fosActivity.refresh();
+    applyBrand && applyBrand();
     ready = true;
-    lastSavedJSON = canon();
+    if (location.pathname.startsWith('/subaccount/')) applyPath(location.pathname);
+    else if (S.view === 'account' && S.acct) {
+      const open = ACCOUNTS.find((x) => x.id === S.acct);
+      if (open && open.slug) history.replaceState({ view: 'account', id: open.id }, '', accountPath(open));
+    }
+    render();
     // Seed the shared workspace ONLY when the server is reachable AND genuinely
     // empty (first run). NEVER write on a failed/unreachable load: a browser
     // with no cached data (e.g. an AI agent's fresh browser) would otherwise

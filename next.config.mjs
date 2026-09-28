@@ -4,6 +4,7 @@ const nextConfig = {
     // Serve the static console + blueprint (public/*.html) at clean paths.
     return [
       { source: '/', destination: '/index.html' },
+      { source: '/subaccount/:slug', destination: '/index.html' },
       { source: '/blueprint', destination: '/blueprint.html' },
       { source: '/accept-invite', destination: '/accept-invite.html' },
     ]
@@ -22,6 +23,7 @@ const nextConfig = {
       // loads the current code + fetches live data, never a stale cached page.
       { source: '/', headers: [noStore] },
       { source: '/index.html', headers: [noStore] },
+      { source: '/subaccount/:slug', headers: [noStore] },
       { source: '/blueprint', headers: [noStore] },
       { source: '/blueprint.html', headers: [noStore] },
       { source: '/accept-invite', headers: [noStore] },
