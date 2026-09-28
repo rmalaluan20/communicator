@@ -3364,10 +3364,19 @@ function msgBadge(me){
 }
 
 /* ---------- agent: subaccount status only ---------- */
+const ACCT_STOP=new Set(['fence','fencing','fences','company','inc','co','the','and','supply','llc','corp']);
 function findAcct(q){
-  const t=q.toLowerCase();
-  return ACCOUNTS.find(a=>t.includes(a.name.toLowerCase()))
-      || ACCOUNTS.find(a=>a.name.toLowerCase().split(/\s+/).some(w=>w.length>3&&t.includes(w)));
+  const t=String(q||'').toLowerCase();
+  const full=ACCOUNTS.filter(a=>a&&a.name&&t.includes(a.name.toLowerCase())).sort((a,b)=>b.name.length-a.name.length);
+  if(full.length) return full[0];
+  const scored=ACCOUNTS.map(a=>{
+    const words=String(a.name||'').toLowerCase().split(/[^a-z0-9]+/).filter(w=>w.length>2&&!ACCT_STOP.has(w));
+    const n=words.filter(w=>new RegExp('\\b'+w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b').test(t)).length;
+    return {a,n};
+  }).filter(x=>x.n>0).sort((x,y)=>y.n-x.n);
+  if(!scored.length) return null;
+  if(scored.length===1||scored[0].n>scored[1].n) return scored[0].a;
+  return null;
 }
 function statusAnswer(a){
   const inc=incompleteOf(a.id), fnd=openFindings(a.id), pct=readiness(a.id);
@@ -3393,11 +3402,15 @@ function agentReply(q){
 }
 function ask(q){
   pushMsg('u',esc(q));
-  const a=ACCOUNTS.find(x=>x.id===S.acct);
+  const open=S.view==='account'?ACCOUNTS.find(x=>x.id===S.acct):null;
+  const named=isGuest()?null:findAcct(q);
+  const portfolio=!isGuest()&&!named&&/\b(all accounts|every account|overall|which accounts|furthest|behind|compare|worst)\b/i.test(q);
+  const a=named||(portfolio?null:open);
   if(isGuest() && window.__fosMsg){
     window.__fosMsg.send({ accountId:a?a.id:null, accountName:a?a.name:null, body:q });
   }
-  pushMsg('a','<p class="dim">Looking at '+(a?esc(a.name):'the open subaccount')+'&hellip;</p>');
+  const label=a?esc(a.name):(portfolio?'all subaccounts':'the company you name');
+  pushMsg('a','<p class="dim">Looking at '+label+'&hellip;</p>');
   fetch('/api/agent', {
     method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({ question:q, accountId:a?a.id:'' }),
