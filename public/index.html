@@ -754,13 +754,27 @@ const STATUS = {
   setting_up:{l:'Setting Up',c:'c-run'},
   verify:{l:'Verification Required',c:'c-warn'}
 };
+let STAGES = ['creation','review','dns','phonep','a2p','done','hold'].map(id=>({id, l:STATUS[id].l, c:STATUS[id].c}));
+const STAGE_COLORS = [['c-idle','Neutral'],['c-run','Active'],['c-hand','Waiting'],['c-warn','Pending'],['c-ok','Complete'],['c-crit','Blocked']];
+const AUDIT_STAGES = new Set(['creation','review','dns','phonep','a2p','done']);
+function stageMeta(k){
+  const s = STAGES.find(x=>x.id===k);
+  if(s) return s;
+  if(STATUS[k]) return {id:k, l:STATUS[k].l, c:STATUS[k].c};
+  return {id:k, l:String(k||'Stage'), c:'c-idle'};
+}
+function stageChoices(current){
+  const ids = STAGES.map(s=>s.id);
+  if(current && ids.indexOf(current)<0) ids.push(current);
+  return ids;
+}
 const BLOCK = {
   none:{l:'—',c:'c-idle'},
   agency:{l:'Us',c:'c-crit'},
   client:{l:'Client',c:'c-hand'},
   external:{l:'Carrier',c:'c-warn'}
 };
-const badge = k => `<span class="chip ${STATUS[k].c}"><i class="dot"></i>${STATUS[k].l}</span>`;
+const badge = k => { const s=stageMeta(k); return `<span class="chip ${s.c}"><i class="dot"></i>${esc(s.l)}</span>`; };
 
 /* ---------- seed accounts ---------- */
 const ACCOUNTS = [
@@ -2342,7 +2356,6 @@ function groupStat(aid,g){
   return {done:ks.filter(k=>MARKS[aid].has(k)).length, total:ks.length,
           issues:ks.filter(k=>['missing','mismatch','client'].includes(verdictOf(aid,k))).length};
 }
-const STAGE_ORDER = ['creation','review','dns','phonep','a2p','done','hold'];
 function derivedStage(id){
   const g=gid=>groupStat(id,GROUPS.find(x=>x.id===gid));
   if(markedCount(id)===TOTAL_ITEMS && !openFindings(id).length) return 'done';
@@ -2425,9 +2438,9 @@ function vAccount(){
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end">
         <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-end">
           <select id="stageSel" ${isOwner()?'':'disabled title="View only — only the owner can change status"'} style="background:var(--panel);border:1px solid var(--line-2);border-radius:var(--r-sm);padding:5px 9px;font-size:12.5px;font-weight:600;font-family:var(--disp)">
-            ${STAGE_ORDER.map(k=>`<option value="${k}" ${k===acctStage(a.id)?'selected':''}>${STATUS[k].l}</option>`).join('')}
+            ${stageChoices(acctStage(a.id)).map(k=>`<option value="${k}" ${k===acctStage(a.id)?'selected':''}>${esc(stageMeta(k).l)}</option>`).join('')}
           </select>
-          <span class="dim" style="font-size:10.5px">${OVERRIDE[a.id]?`Manual &middot; audit suggests <b>${STATUS[derivedStage(a.id)].l}</b>`:'Derived from the audit'}</span>
+          <span class="dim" style="font-size:10.5px">${OVERRIDE[a.id]?`Manual &middot; audit suggests <b>${esc(stageMeta(derivedStage(a.id)).l)}</b>`:'Derived from the audit'}</span>
         </div>
         ${(()=>{ const bs=blockersFor(a.id);
           if(ready) return '<span class="chip c-ok"><i class="dot"></i>Completed</span>';
@@ -2549,7 +2562,7 @@ function vAccount(){
         <div class="pad" style="border-bottom:1px solid var(--line)"><h2>Record</h2></div>
         <div class="pad">
           <dl class="kv" style="grid-template-columns:auto 1fr;font-size:12.5px">
-            <dt>Pipeline Stage</dt><dd>${STATUS[acctStage(a.id)].l}</dd>
+            <dt>Pipeline Stage</dt><dd>${esc(stageMeta(acctStage(a.id)).l)}</dd>
             <dt>Owner</dt><dd>${esc(a.city)}</dd>
             <dt>Percentage</dt><dd class="num">${pctv}% <span class="dim">(computed)</span></dd>
             <dt>Blockers</dt><dd>${(()=>{const bs=blockersFor(a.id);return bs.length?bs.map(b=>b.title).join(', '):'<span class="dim">None</span>';})()}</dd>
@@ -2590,7 +2603,7 @@ function bindAccount(){
   const cu=$('#copyUrl'); if(cu) cu.onclick=()=>{ const url=location.origin+accountPath(a); if(navigator.clipboard) navigator.clipboard.writeText(url).then(()=>toast('Link copied')); else toast(url); };
   const ol=$('#openLog'); if(ol) ol.onclick=()=>{ S.auditFor=a.id; S.view='audit'; if(location.pathname.startsWith('/subaccount/')) history.pushState({view:'audit'},'','/'); render(); };
   $$('[data-audit]').forEach(b=>b.onclick=()=>openAudit(b.dataset.audit));
-  const sel=$('#stageSel'); if(sel) sel.onchange=()=>{ if(!isOwner()){ toast('View only — only the owner can change status','bad'); render(); return; } if(sel.value===derivedStage(a.id)) delete OVERRIDE[a.id]; else OVERRIDE[a.id]=sel.value; window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'status_changed', description:'Status set to '+STATUS[sel.value].l}); toast('Pipeline stage set to '+STATUS[sel.value].l); };
+  const sel=$('#stageSel'); if(sel) sel.onchange=()=>{ if(!isOwner()){ toast('View only — only the owner can change status','bad'); render(); return; } if(sel.value===derivedStage(a.id)) delete OVERRIDE[a.id]; else OVERRIDE[a.id]=sel.value; window.__fosSaveMode='now'; recordActivity({accountId:a.id, type:'status_changed', description:'Status set to '+stageMeta(sel.value).l}); toast('Pipeline stage set to '+stageMeta(sel.value).l); };
   const fnd=openFindings(a.id);
   $$('[data-find]').forEach(b=>b.onclick=()=>openFinding(fnd[b.dataset.find],a));
   const add=$('#noteAdd'), inp=$('#noteInput');
@@ -2818,16 +2831,16 @@ function openFinding(f,a){
 /* ============================================================
    SUBACCOUNTS LIST  &  SNAPSHOT REGISTRY
    ============================================================ */
-const FILTERS = [['all','All'],['review','In Review'],['phonep','Phone # Pending'],['dns','Waiting on DNS'],['a2p','A2P Approved'],['done','Complete'],['creation','New']];
 function vAcctList(){
   const f=S.acctFilter||'all';
+  const filters=[['all','All']].concat(STAGES.map(s=>[s.id, s.l]));
   const rows=ACCOUNTS.filter(a=>f==='all'||acctStage(a.id)===f);
   return `
   <div class="sec-head"><h1>Subaccounts</h1><div class="sp"></div>
     <button class="btn pri" onclick="startWizard()">${ic('plus')}New subaccount</button></div>
   <div class="card">
     <div class="pad" style="border-bottom:1px solid var(--line);display:flex;gap:9px;align-items:center;flex-wrap:wrap">
-      <div class="filters">${FILTERS.map(([k,l])=>{
+      <div class="filters">${filters.map(([k,l])=>{
         const n = k==='all'?ACCOUNTS.length:ACCOUNTS.filter(a=>acctStage(a.id)===k).length;
         return `<button class="btn sm ${k===f?'on':''}" data-af="${k}">${l}${n?` <span class="num" style="opacity:.65">${n}</span>`:''}</button>`;
       }).join('')}</div>
@@ -2961,7 +2974,7 @@ const TEAM = [
 ];
 const PREFS = {cadence:'daily', notifyFinding:true, notifyClient:true, clientDays:7, notifyDigest:true, techDefault:false};
 const BRAND = {logoLight:'', logoDark:'', icon:'', favicon:''};
-const SET_TABS=[['branding','Branding'],['connections','Connections'],['ai','AI Integration'],['checklist','Checklist template'],['schedule','Audit &amp; notifications'],['team','Team']];
+const SET_TABS=[['branding','Branding'],['connections','Connections'],['ai','AI Integration'],['checklist','Checklist template'],['stages','Pipeline stages'],['schedule','Audit &amp; notifications'],['team','Team']];
 
 function vSettings(){
   const t=S.setTab;
@@ -2970,7 +2983,7 @@ function vSettings(){
     <div class="filters" style="margin-bottom:16px">
       ${SET_TABS.map(([k,l])=>`<button class="btn sm ${k===t?'on':''}" data-st="${k}">${l}</button>`).join('')}
     </div>
-    ${({branding:setBrand, connections:setConns, ai:setAi, checklist:setTpl, schedule:setSched, team:setTeam}[t]||setBrand)()}
+    ${({branding:setBrand, connections:setConns, ai:setAi, checklist:setTpl, stages:setStages, schedule:setSched, team:setTeam}[t]||setBrand)()}
   </div>`;
 }
 function currentDark(){ const t=getTheme(); return t==='dark' || (t==='system' && matchMedia('(prefers-color-scheme:dark)').matches); }
@@ -3153,6 +3166,47 @@ function setTpl(){
     </div>
   </div>`;
 }
+function setStages(){
+  const row = (s,i)=>`<div class="item" style="padding:12px 15px;gap:10px">
+    <span class="chip ${s.c}" style="flex:none"><i class="dot"></i></span>
+    <input data-stglab="${esc(s.id)}" value="${esc(s.l)}" aria-label="Stage name" style="flex:1;min-width:160px">
+    <select data-stgcol="${esc(s.id)}" aria-label="Stage color" style="background:var(--panel);border:1px solid var(--line-2);border-radius:var(--r-sm);padding:6px 8px;font-size:12.5px">
+      ${STAGE_COLORS.map(([c,l])=>`<option value="${c}" ${s.c===c?'selected':''}>${l}</option>`).join('')}
+    </select>
+    <button class="btn sm" data-stgup="${i}" ${i===0?'disabled':''} aria-label="Move up" style="transform:rotate(-90deg)">${ic('chev',12)}</button>
+    <button class="btn sm" data-stgdn="${i}" ${i===STAGES.length-1?'disabled':''} aria-label="Move down" style="transform:rotate(90deg)">${ic('chev',12)}</button>
+    <button class="btn sm ghost" data-stgdel="${esc(s.id)}" style="color:var(--crit)">Remove</button>
+  </div>`;
+  return `<div class="card">
+    <div class="pad" style="border-bottom:1px solid var(--line)">
+      <h2>Pipeline stages</h2>
+      <p class="muted" style="font-size:12.5px;margin-top:4px;max-width:70ch">These are the choices in the status dropdown on each subaccount. Renaming a stage keeps every account that already uses it.</p>
+    </div>
+    ${STAGES.map(row).join('')}
+    <div class="pad" style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+      <div class="f" style="flex:1;min-width:200px"><label for="stgName">New stage</label>
+        <input id="stgName" placeholder="e.g. Waiting on client"></div>
+      <button class="btn pri" id="stgAdd">${ic('plus')}Add stage</button>
+    </div>
+    <div class="note-new"><p class="dim" style="font-size:11.5px">The audit can still assign Subaccount Creation, In Review, Waiting on DNS Records, Phone # Pending, A2P Approved, and Initial Setup Complete. Those six can be renamed and reordered. A stage you added can be removed when no subaccount is using it.</p></div>
+  </div>`;
+}
+function saveStageLabel(id, value){
+  const s=STAGES.find(x=>x.id===id); if(!s) return;
+  const label=String(value||'').trim().slice(0,60);
+  if(!label || label===s.l) return;
+  s.l=label; window.__fosSaveMode='now'; render(); toast('Stage renamed');
+}
+function addStage(label){
+  const name=String(label||'').trim().slice(0,60);
+  if(!name){ toast('Name the stage first','bad'); return; }
+  const base=(slugifyName(name).replace(/-/g,'_').slice(0,24))||'stage';
+  let id=base, n=2;
+  const taken=new Set(STAGES.map(s=>s.id).concat(Object.keys(STATUS)));
+  while(taken.has(id)) id=base+'_'+(n++);
+  STAGES.push({id, l:name, c:'c-idle'});
+  window.__fosSaveMode='now'; render(); toast(name+' added');
+}
 function setSched(){
   const row=(k,label,desc,on)=>`<div class="item" style="padding:13px 15px">
     <div class="ibody"><b>${label}</b><span class="ihint">${desc}</span></div>
@@ -3268,6 +3322,21 @@ function openConsoleInvite(){
 function bindSettings(){
   $$('[data-st]').forEach(b=>b.onclick=()=>{ S.setTab=b.dataset.st; S.tplG=null; render(); });
   if(S.setTab==='ai' && isOwner()) loadAiSettings();
+  $$('[data-stglab]').forEach(inp=>inp.addEventListener('blur',()=>saveStageLabel(inp.dataset.stglab, inp.value)));
+  $$('[data-stgcol]').forEach(sel=>sel.onchange=()=>{ const s=STAGES.find(x=>x.id===sel.dataset.stgcol); if(!s) return; s.c=sel.value; window.__fosSaveMode='now'; render(); });
+  $$('[data-stgup]').forEach(b=>b.onclick=()=>{ const i=+b.dataset.stgup; if(i<1) return; const [row]=STAGES.splice(i,1); STAGES.splice(i-1,0,row); window.__fosSaveMode='now'; render(); });
+  $$('[data-stgdn]').forEach(b=>b.onclick=()=>{ const i=+b.dataset.stgdn; if(i>=STAGES.length-1) return; const [row]=STAGES.splice(i,1); STAGES.splice(i+1,0,row); window.__fosSaveMode='now'; render(); });
+  $$('[data-stgdel]').forEach(b=>b.onclick=()=>{
+    const id=b.dataset.stgdel;
+    const n=ACCOUNTS.filter(a=>acctStage(a.id)===id).length;
+    if(AUDIT_STAGES.has(id)){ toast('The audit still assigns this stage. Rename it instead.','bad'); return; }
+    if(n){ toast(n+' subaccount'+(n===1?' is':'s are')+' using this stage. Move them first.','bad'); return; }
+    if(STAGES.length<2){ toast('Keep at least one stage','bad'); return; }
+    const i=STAGES.findIndex(s=>s.id===id); if(i<0) return;
+    STAGES.splice(i,1); window.__fosSaveMode='now'; render(); toast('Stage removed');
+  });
+  const stgAdd=$('#stgAdd'); if(stgAdd) stgAdd.onclick=()=>addStage($('#stgName')&&$('#stgName').value);
+  const stgName=$('#stgName'); if(stgName) stgName.onkeydown=e=>{ if(e.key==='Enter'){ e.preventDefault(); addStage(stgName.value); } };
   const aiSave=$('#aiSave');
   if(aiSave) aiSave.onclick=saveAiSettings;
   const aiTest=$('#aiTest');
@@ -3418,7 +3487,7 @@ function statusAnswer(a){
   const inc=incompleteOf(a.id), fnd=openFindings(a.id), pct=readiness(a.id);
   const byG={}; inc.forEach(x=>{ byG[x.g.n]=(byG[x.g.n]||0)+1; });
   const top=Object.entries(byG).sort((x,y)=>y[1]-x[1]).slice(0,3);
-  return {m:`<p><b>${esc(a.name)}</b> — ${STATUS[acctStage(a.id)].l}, <b>${pct}% complete</b>.</p>
+  return {m:`<p><b>${esc(a.name)}</b> — ${esc(stageMeta(acctStage(a.id)).l)}, <b>${pct}% complete</b>.</p>
     <p>${markedCount(a.id)} of ${TOTAL_ITEMS} checklist items done, ${inc.length} outstanding.${fnd.length?` ${fnd.length} carry a note from the last audit.`:''}</p>
     ${top.length?`<p>Most outstanding:</p><ul>${top.map(([n,c])=>`<li>${n} — ${c} item${c===1?'':'s'}</li>`).join('')}</ul>`:''}
     ${(()=>{const bs=blockersFor(a.id);return bs.length?`<p class="dim" style="font-size:12px">Blockers: ${bs.map(b=>b.title).join(', ')}</p>`:'';})()}`,
@@ -3672,7 +3741,7 @@ render();
   function snapshot() {
     return {
       S: { feats: S.feats, form: S.form, useRec: S.useRec, tech: S.tech, setTab: S.setTab },
-      ACCOUNTS, MARKS, FIND, OVERRIDE, SNAPSHOTS, TEAM, PREFS, BRAND, COMM, ACTIVITY, GROUPS,
+      ACCOUNTS, MARKS, FIND, OVERRIDE, SNAPSHOTS, TEAM, PREFS, BRAND, COMM, ACTIVITY, GROUPS, STAGES,
     };
   }
 
@@ -3687,6 +3756,15 @@ render();
     }
     // Checklist template drives TOTAL_ITEMS / readiness, so it must be shared.
     if (Array.isArray(data.GROUPS)) { fillArr(GROUPS, data.GROUPS); if (typeof reindex === 'function') reindex(); }
+    if (Array.isArray(data.STAGES) && data.STAGES.length) {
+      const colors = new Set(['c-idle','c-run','c-hand','c-warn','c-ok','c-crit']);
+      const next = data.STAGES.filter(s => s && typeof s.id === 'string' && s.id && typeof s.l === 'string' && s.l).map(s => ({
+        id: String(s.id).slice(0, 40),
+        l: String(s.l).slice(0, 60),
+        c: colors.has(s.c) ? s.c : 'c-idle',
+      }));
+      if (next.length) { STAGES.splice(0, STAGES.length, ...next); }
+    }
     if (data.ACCOUNTS) fillArr(ACCOUNTS, data.ACCOUNTS);
     if (data.MARKS) fillObj(MARKS, data.MARKS);
     if (data.FIND) fillObj(FIND, data.FIND);
